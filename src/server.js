@@ -559,13 +559,8 @@ app.post("/setup/api/convos/complete-setup", requireSetupAuth, async (req, res) 
       });
     }
 
-    // Check if already configured
-    if (isConfigured()) {
-      return res.json({
-        ok: true,
-        output: "Already configured. Use Reset setup if you want to rerun onboarding.\n"
-      });
-    }
+    // Note: We don't check isConfigured() here because the Convos QR generation
+    // step already creates a partial config. This endpoint completes that setup.
 
     fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
