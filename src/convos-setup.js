@@ -40,6 +40,10 @@ export async function sendMessage(message) {
   if (!activeGroup) {
     throw new Error("No active group - setup not complete");
   }
+  // Sync the group to ensure new members can receive messages
+  console.log("[convos-setup] Syncing group before sending...");
+  await activeGroup.sync();
+  console.log("[convos-setup] Sending message...");
   await activeGroup.send(message);
   console.log("[convos-setup] Message sent to conversation");
 }
