@@ -7,7 +7,7 @@ import { Agent, createUser, createSigner } from "@xmtp/agent-sdk";
 import { ConvosMiddleware } from "convos-node-sdk";
 import { execSync } from "child_process";
 
-const CONVOS_INVITE_BASE_URL = "https://convos.app/join/";
+// Note: invite.url from SDK is already fully formed, no need for base URL
 
 /**
  * Setup Convos channel - creates conversation and returns invite URL
@@ -38,13 +38,15 @@ export async function setupConvos(options = {}) {
   // Start agent to enable conversation creation
   await agent.start();
 
-  // Create a new conversation
-  const result = await convos.createConversation(conversationName);
+  // Create XMTP group and wrap with Convos
+  const group = await agent.client.conversations.createGroup([]);
+  const convosGroup = convos.group(group);
+  const invite = await convosGroup.createInvite({ name: conversationName });
 
-  console.log(`[convos-setup] Conversation created: ${result.conversationId}`);
+  console.log(`[convos-setup] Conversation created: ${group.id}`);
 
-  // Get invite URL
-  const inviteUrl = `${CONVOS_INVITE_BASE_URL}${result.inviteSlug}`;
+  // Get invite URL (already fully formed from SDK)
+  const inviteUrl = invite.url;
 
   console.log(`[convos-setup] Invite URL: ${inviteUrl}`);
 
@@ -56,7 +58,7 @@ export async function setupConvos(options = {}) {
     enabled: true,
     privateKey: user.key,
     env,
-    ownerConversationId: result.conversationId,
+    ownerConversationId: group.id,
   });
 
   try {
@@ -71,8 +73,8 @@ export async function setupConvos(options = {}) {
 
   return {
     inviteUrl,
-    inviteSlug: result.inviteSlug,
-    conversationId: result.conversationId,
+    inviteSlug: invite.slug,
+    conversationId: group.id,
     privateKey: user.key,
   };
 }
