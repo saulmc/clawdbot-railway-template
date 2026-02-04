@@ -314,20 +314,25 @@
       if (inviteSection) inviteSection.style.display = 'block';
 
       // Show QR code
-      var canvas = document.getElementById('convos-qr');
-      if (canvas && typeof QRCode !== 'undefined') {
-        QRCode.toCanvas(canvas, data.inviteUrl, {
-          width: 256,
-          margin: 2,
-          color: { dark: '#000000', light: '#ffffff' }
-        }, function(err) {
-          if (err) {
-            console.error('QR code generation error:', err);
-            canvas.style.display = 'none';
-          }
-        });
+      var qrContainer = document.getElementById('convos-qr');
+      if (qrContainer && typeof QRCode !== 'undefined') {
+        // Clear any previous QR code
+        qrContainer.innerHTML = '';
+        try {
+          new QRCode(qrContainer, {
+            text: data.inviteUrl,
+            width: 256,
+            height: 256,
+            colorDark: '#000000',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.M
+          });
+        } catch (err) {
+          console.error('QR code generation error:', err);
+          qrContainer.textContent = 'QR code generation failed';
+        }
       } else {
-        console.error('QRCode library not loaded or canvas not found');
+        console.error('QRCode library not loaded or container not found');
       }
 
       var urlInput = document.getElementById('convos-invite-url');

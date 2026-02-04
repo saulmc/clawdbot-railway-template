@@ -244,7 +244,7 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OpenClaw Setup</title>
-  <script src="https://unpkg.com/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <style>
     body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 2rem; max-width: 900px; }
     .card { border: 1px solid #ddd; border-radius: 12px; padding: 1.25rem; margin: 1rem 0; }
@@ -339,7 +339,7 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
     <div id="convos-result" style="margin-top: 1rem;">
       <div style="text-align: center; padding: 1rem; background: #fff; border: 1px solid #ddd; border-radius: 8px;">
         <p style="font-weight: bold; margin-bottom: 1rem;">Scan with Convos iOS App</p>
-        <canvas id="convos-qr" width="256" height="256" style="margin: 0 auto; display: block;"></canvas>
+        <div id="convos-qr" style="margin: 0 auto; display: inline-block;"></div>
         <div id="convos-loading" style="padding: 2rem; color: #666;">Loading QR code...</div>
         <div id="convos-invite-section" style="display: none; margin-top: 1rem;">
           <input type="text" id="convos-invite-url" readonly style="width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.85rem;" />
