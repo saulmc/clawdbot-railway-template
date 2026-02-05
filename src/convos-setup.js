@@ -69,8 +69,7 @@ export async function stopConvosAgent() {
  * Setup Convos channel - creates conversation and returns invite URL
  * Keeps agent running to accept join requests
  * @param {object} options
- * @param {string} [options.env] - XMTP environment (production/dev)
- * @param {string} [options.name] - Optional conversation name
+ * @param {string} [options.env] - XMTP environment (production/dev), defaults to XMTP_ENV env var or "production"
  * @returns {Promise<{inviteUrl: string, conversationId: string, privateKey: string}>}
  */
 export async function setupConvos(options = {}) {
@@ -80,8 +79,9 @@ export async function setupConvos(options = {}) {
   // Reset join state
   joinState = { joined: false, joinerInboxId: null, error: null };
 
-  const env = options.env || "production";
-  const conversationName = options.name || "OpenClaw";
+  // Use XMTP_ENV environment variable, defaulting to production
+  const env = options.env || process.env.XMTP_ENV || "production";
+  const conversationName = "OpenClaw";
 
   console.log(`[convos-setup] Creating XMTP identity (env: ${env})...`);
 

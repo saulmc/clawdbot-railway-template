@@ -69,6 +69,9 @@ const INTERNAL_GATEWAY_PORT = Number.parseInt(process.env.INTERNAL_GATEWAY_PORT 
 const INTERNAL_GATEWAY_HOST = process.env.INTERNAL_GATEWAY_HOST ?? "127.0.0.1";
 const GATEWAY_TARGET = `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}`;
 
+// XMTP environment (production or dev) - controlled via Railway env var
+const XMTP_ENV = process.env.XMTP_ENV || "production";
+
 // Always run the built-from-source CLI entry directly to avoid PATH/global-install mismatches.
 const OPENCLAW_ENTRY = process.env.OPENCLAW_ENTRY?.trim() || "/openclaw/dist/entry.js";
 const OPENCLAW_NODE = process.env.OPENCLAW_NODE?.trim() || "node";
@@ -237,191 +240,593 @@ app.get("/setup/app.js", requireSetupAuth, (_req, res) => {
 });
 
 app.get("/setup", requireSetupAuth, (_req, res) => {
-  // No inline <script>: serve JS from /setup/app.js to avoid any encoding/template-literal issues.
+  // Pass XMTP_ENV to the page for display
+  const envBadgeClass = XMTP_ENV === "dev" ? "env-dev" : "env-production";
+  const envLabel = XMTP_ENV === "dev" ? "dev" : "production";
+
   res.type("html").send(`<!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OpenClaw Setup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <style>
-    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 2rem; max-width: 900px; }
-    .card { border: 1px solid #ddd; border-radius: 12px; padding: 1.25rem; margin: 1rem 0; }
-    label { display:block; margin-top: 0.75rem; font-weight: 600; }
-    input, select { width: 100%; padding: 0.6rem; margin-top: 0.25rem; }
-    button { padding: 0.8rem 1.2rem; border-radius: 10px; border: 0; background: #111; color: #fff; font-weight: 700; cursor: pointer; }
-    code { background: #f6f6f6; padding: 0.1rem 0.3rem; border-radius: 6px; }
-    .muted { color: #555; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+      background: #FFF;
+      min-height: 100vh;
+      padding: 32px;
+      color: #000;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .container {
+      max-width: 900px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 32px;
+    }
+
+    .logo-container {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-text {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      color: #666;
+      padding: 8px 14px;
+      background: #F5F5F5;
+      border-radius: 20px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #34C759;
+    }
+
+    .status-dot.pending {
+      background: #FF9500;
+    }
+
+    .status-dot.error {
+      background: #FF3B30;
+    }
+
+    .env-badge {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+
+    .env-badge.env-dev {
+      color: #007AFF;
+      background: #E5F1FF;
+    }
+
+    .env-badge.env-production {
+      color: #FC4F37;
+      background: #FFE8E5;
+    }
+
+    .main-content {
+      display: grid;
+      grid-template-columns: 1fr 340px;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+
+    @media (max-width: 768px) {
+      .main-content {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: #FFF;
+      border: 1px solid #EBEBEB;
+      border-radius: 24px;
+      padding: 32px;
+    }
+
+    .card h3 {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      letter-spacing: -0.08px;
+    }
+
+    .qr-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 350px;
+    }
+
+    .qr-placeholder {
+      color: #999;
+      font-size: 16px;
+      text-align: center;
+    }
+
+    .qr-placeholder p {
+      margin-top: 8px;
+      font-size: 14px;
+      color: #666;
+    }
+
+    #convos-qr {
+      border-radius: 16px;
+      overflow: hidden;
+    }
+
+    #convos-qr canvas, #convos-qr img {
+      border-radius: 16px;
+    }
+
+    .qr-info {
+      margin-top: 24px;
+      padding: 16px 20px;
+      background: #F5F5F5;
+      border-radius: 16px;
+      width: 100%;
+      max-width: 300px;
+    }
+
+    .qr-info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid #EBEBEB;
+    }
+
+    .qr-info-row:last-child {
+      border-bottom: none;
+    }
+
+    .qr-info-label {
+      font-size: 12px;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .qr-info-value {
+      font-size: 14px;
+      font-weight: 500;
+      color: #000;
+    }
+
+    .qr-info-value.status {
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .qr-info-value.status.waiting {
+      background: #FFF3CD;
+      color: #856404;
+    }
+
+    .qr-info-value.status.joined {
+      background: #D4EDDA;
+      color: #155724;
+    }
+
+    .invite-url {
+      margin-top: 16px;
+      padding: 12px 16px;
+      background: #F5F5F5;
+      border-radius: 12px;
+      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+      font-size: 11px;
+      word-break: break-all;
+      color: #666;
+      cursor: pointer;
+      transition: background 0.2s;
+      width: 100%;
+      max-width: 300px;
+      text-align: center;
+    }
+
+    .invite-url:hover {
+      background: #EBEBEB;
+    }
+
+    .setting-group {
+      margin-bottom: 20px;
+    }
+
+    .setting-group:last-child {
+      margin-bottom: 0;
+    }
+
+    .setting-label {
+      display: block;
+      color: #666;
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 8px;
+    }
+
+    .setting-input {
+      width: 100%;
+      background: #FFF;
+      border: 1px solid #EBEBEB;
+      border-radius: 12px;
+      padding: 12px 16px;
+      font-size: 15px;
+      color: #000;
+      font-family: inherit;
+      transition: all 0.2s ease;
+    }
+
+    .setting-input:focus {
+      outline: none;
+      border-color: #000;
+    }
+
+    .setting-input::placeholder {
+      color: #B2B2B2;
+    }
+
+    .btn-primary {
+      background: #FC4F37;
+      color: #FFF;
+      border: none;
+      border-radius: 40px;
+      padding: 18px 32px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      letter-spacing: -0.08px;
+      width: 100%;
+    }
+
+    .btn-primary:hover {
+      opacity: 0.9;
+    }
+
+    .btn-primary:active {
+      transform: scale(0.98);
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-primary.success {
+      background: #34C759;
+    }
+
+    .btn-secondary {
+      background: #F5F5F5;
+      color: #000;
+      border: none;
+      border-radius: 12px;
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn-secondary:hover {
+      background: #EBEBEB;
+    }
+
+    .error-message {
+      color: #DC2626;
+      font-size: 14px;
+      margin-top: 12px;
+      padding: 12px 16px;
+      background: #FEE2E2;
+      border-radius: 12px;
+      display: none;
+    }
+
+    .setup-log {
+      margin-top: 16px;
+      padding: 16px;
+      background: #F5F5F5;
+      border-radius: 12px;
+      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      max-height: 200px;
+      overflow-y: auto;
+      display: none;
+    }
+
+    details {
+      margin-top: 24px;
+    }
+
+    details summary {
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      color: #666;
+      padding: 12px 0;
+    }
+
+    details summary:hover {
+      color: #000;
+    }
+
+    .advanced-section {
+      margin-top: 16px;
+      padding: 24px;
+      background: #FAFAFA;
+      border-radius: 16px;
+    }
+
+    .advanced-section h4 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #333;
+    }
+
+    .advanced-buttons {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .advanced-card {
+      margin-top: 16px;
+      padding: 16px;
+      background: #FFF;
+      border: 1px solid #EBEBEB;
+      border-radius: 12px;
+    }
+
+    .advanced-card h5 {
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+
+    .console-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .console-output {
+      margin-top: 12px;
+      padding: 12px;
+      background: #1a1a1a;
+      color: #00ff00;
+      border-radius: 8px;
+      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .config-textarea {
+      width: 100%;
+      height: 200px;
+      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+      font-size: 12px;
+      padding: 12px;
+      border: 1px solid #EBEBEB;
+      border-radius: 8px;
+      resize: vertical;
+    }
+
+    .config-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .muted {
+      color: #666;
+      font-size: 13px;
+    }
+
+    code {
+      background: #F5F5F5;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+      font-size: 12px;
+    }
+
+    .hidden {
+      display: none !important;
+    }
   </style>
 </head>
 <body>
-  <h1>OpenClaw Setup</h1>
-  <p class="muted">This wizard configures OpenClaw by running the same onboarding command it uses in the terminal, but from the browser.</p>
-
-  <div class="card">
-    <h2>Status</h2>
-    <div id="status">Loading...</div>
-    <div style="margin-top: 0.75rem">
-      <a href="/openclaw" target="_blank">Open OpenClaw UI</a>
-      &nbsp;|&nbsp;
-      <a href="/setup/export" target="_blank">Download backup (.tar.gz)</a>
-    </div>
-
-    <div style="margin-top: 0.75rem">
-      <div class="muted" style="margin-bottom:0.25rem"><strong>Import backup</strong> (advanced): restores into <code>/data</code> and restarts the gateway.</div>
-      <input id="importFile" type="file" accept=".tar.gz,application/gzip" />
-      <button id="importRun" style="background:#7c2d12; margin-top:0.5rem">Import</button>
-      <pre id="importOut" style="white-space:pre-wrap"></pre>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Debug console</h2>
-    <p class="muted">Run a small allowlist of safe commands (no shell). Useful for debugging and recovery.</p>
-
-    <div style="display:flex; gap:0.5rem; align-items:center">
-      <select id="consoleCmd" style="flex: 1">
-        <option value="gateway.restart">gateway.restart (wrapper-managed)</option>
-        <option value="gateway.stop">gateway.stop (wrapper-managed)</option>
-        <option value="gateway.start">gateway.start (wrapper-managed)</option>
-        <option value="openclaw.status">openclaw status</option>
-        <option value="openclaw.health">openclaw health</option>
-        <option value="openclaw.doctor">openclaw doctor</option>
-        <option value="openclaw.logs.tail">openclaw logs --tail N</option>
-        <option value="openclaw.config.get">openclaw config get &lt;path&gt;</option>
-        <option value="openclaw.version">openclaw --version</option>
-      </select>
-      <input id="consoleArg" placeholder="Optional arg (e.g. 200, gateway.port)" style="flex: 1" />
-      <button id="consoleRun" style="background:#0f172a">Run</button>
-    </div>
-    <pre id="consoleOut" style="white-space:pre-wrap"></pre>
-  </div>
-
-  <div class="card">
-    <h2>Config editor (advanced)</h2>
-    <p class="muted">Edits the full config file on disk (JSON5). Saving creates a timestamped <code>.bak-*</code> backup and restarts the gateway.</p>
-    <div class="muted" id="configPath"></div>
-    <textarea id="configText" style="width:100%; height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;"></textarea>
-    <div style="margin-top:0.5rem">
-      <button id="configReload" style="background:#1f2937">Reload</button>
-      <button id="configSave" style="background:#111; margin-left:0.5rem">Save</button>
-    </div>
-    <pre id="configOut" style="white-space:pre-wrap"></pre>
-  </div>
-
-  <div class="card">
-    <h2>1) Connect via Convos</h2>
-    <p class="muted">
-      Convos provides end-to-end encrypted messaging via XMTP.
-      Scan the QR code with the Convos iOS app to join the conversation.
-    </p>
-
-    <div id="convos-status" style="margin-bottom: 1rem; padding: 0.5rem; background: #f5f5f5; border-radius: 4px;">
-      Generating invite...
-    </div>
-
-    <div id="convos-setup-section" style="display: none;">
-      <label for="convos-name">Conversation Name (optional)</label>
-      <input type="text" id="convos-name" placeholder="OpenClaw" style="margin-bottom: 0.5rem;" />
-
-      <label for="convos-env">Environment</label>
-      <select id="convos-env" style="margin-bottom: 1rem;">
-        <option value="production">Production</option>
-        <option value="dev">Development</option>
-      </select>
-
-      <button id="convos-setup-btn" type="button" style="background:#0f172a">
-        Regenerate Invite
-      </button>
-    </div>
-
-    <div id="convos-result" style="margin-top: 1rem;">
-      <div style="text-align: center; padding: 1rem; background: #fff; border: 1px solid #ddd; border-radius: 8px;">
-        <p style="font-weight: bold; margin-bottom: 1rem;">Scan with Convos iOS App</p>
-        <div id="convos-qr" style="margin: 0 auto; display: inline-block;"></div>
-        <div id="convos-loading" style="padding: 2rem; color: #666;">Loading QR code...</div>
-        <div id="convos-invite-section" style="display: none; margin-top: 1rem;">
-          <input type="text" id="convos-invite-url" readonly style="width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.85rem;" />
-          <button type="button" id="convos-copy-btn" style="margin-top: 0.5rem;">
-            Copy Invite URL
-          </button>
+  <div class="container">
+    <header class="header">
+      <div class="logo-container">
+        <span class="logo-text">OpenClaw</span>
+      </div>
+      <div class="header-right">
+        <div class="status-badge">
+          <span class="status-dot pending" id="status-dot"></span>
+          <span id="status-text">Loading...</span>
         </div>
-        <p id="convos-join-status-text" style="margin-top: 1rem; font-size: 0.85rem; color: #666;">
-          Scan the QR code with the Convos iOS app. Your join request will be accepted automatically.
-        </p>
+        <span class="env-badge ${envBadgeClass}">${envLabel}</span>
+      </div>
+    </header>
+
+    <div class="main-content">
+      <div class="card">
+        <h3>Connect via Convos</h3>
+        <div class="qr-container">
+          <div id="convos-qr"></div>
+          <div id="convos-loading" class="qr-placeholder">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5">
+              <rect x="3" y="3" width="7" height="7" rx="1" />
+              <rect x="14" y="3" width="7" height="7" rx="1" />
+              <rect x="3" y="14" width="7" height="7" rx="1" />
+              <rect x="14" y="14" width="3" height="3" />
+              <rect x="18" y="14" width="3" height="3" />
+              <rect x="14" y="18" width="3" height="3" />
+              <rect x="18" y="18" width="3" height="3" />
+            </svg>
+            <p>Generating invite...</p>
+          </div>
+          <div class="qr-info" id="qr-info" style="display: none;">
+            <div class="qr-info-row">
+              <span class="qr-info-label">Status</span>
+              <span class="qr-info-value status waiting" id="join-status">Waiting</span>
+            </div>
+          </div>
+          <div class="invite-url" id="convos-invite-url" style="display: none;" onclick="copyInvite(this)" title="Click to copy"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Model Configuration</h3>
+
+        <div class="setting-group">
+          <label class="setting-label" for="authGroup">Provider</label>
+          <select id="authGroup" class="setting-input"></select>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label" for="authChoice">Auth Method</label>
+          <select id="authChoice" class="setting-input"></select>
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label" for="authSecret">API Key / Token</label>
+          <input id="authSecret" type="password" class="setting-input" placeholder="Paste API key or token" />
+        </div>
+
+        <div class="setting-group">
+          <label class="setting-label" for="flow">Setup Flow</label>
+          <select id="flow" class="setting-input">
+            <option value="quickstart">Quickstart</option>
+            <option value="advanced">Advanced</option>
+            <option value="manual">Manual</option>
+          </select>
+        </div>
       </div>
     </div>
-  </div>
 
-  <div class="card">
-    <h2>2) Model/Auth Configuration</h2>
-    <p class="muted">Configure which AI provider to use.</p>
-    <label>Provider group</label>
-    <select id="authGroup"></select>
-
-    <label>Auth method</label>
-    <select id="authChoice"></select>
-
-    <label>Key / Token (if required)</label>
-    <input id="authSecret" type="password" placeholder="Paste API key / token if applicable" />
-
-    <label>Wizard flow</label>
-    <select id="flow">
-      <option value="quickstart">quickstart</option>
-      <option value="advanced">advanced</option>
-      <option value="manual">manual</option>
-    </select>
-  </div>
-
-  <div class="card" id="complete-setup-card">
-    <h2>3) Complete Setup</h2>
-    <p id="complete-setup-status" class="muted">
-      After scanning the QR code and joining the conversation, click below to complete setup.
-      The pairing code will be sent to your Convos chat automatically.
-    </p>
-
-    <button id="completeSetup" disabled style="background:#16a34a; opacity: 0.5;">
-      Complete Setup & Send Pairing Code
+    <button id="completeSetup" class="btn-primary" disabled>
+      Finish Setup & Send Pairing Code
     </button>
 
-    <pre id="log" style="white-space:pre-wrap; margin-top: 1rem;"></pre>
-  </div>
+    <div id="setup-error" class="error-message"></div>
+    <pre id="log" class="setup-log"></pre>
 
-  <div class="card">
-    <h2>Advanced Options</h2>
-    <button id="pairingApprove" style="background:#1f2937">Approve pairing manually</button>
-    <button id="run" style="background:#374151; margin-left:0.5rem">Run onboarding only</button>
-    <button id="reset" style="background:#444; margin-left:0.5rem">Reset setup</button>
-    <p class="muted" style="margin-top: 0.5rem">
-      Use these if you need to manually approve pairing, run onboarding separately, or reset the config.
-    </p>
-
-    <details style="margin-top: 1rem;">
-      <summary class="muted" style="cursor: pointer;">Other channels (Telegram, Discord, Slack)</summary>
-      <div style="margin-top: 0.75rem;">
-        <label>Telegram bot token (optional)</label>
-        <input id="telegramToken" type="password" placeholder="123456:ABC..." />
-        <div class="muted" style="margin-top: 0.25rem">
-          Get it from BotFather: open Telegram, message <code>@BotFather</code>, run <code>/newbot</code>, then copy the token.
+    <details>
+      <summary>Advanced Options</summary>
+      <div class="advanced-section">
+        <div class="advanced-buttons">
+          <button id="reset" class="btn-secondary">Reset Setup</button>
+          <button id="pairingApprove" class="btn-secondary">Approve Pairing Manually</button>
+          <a href="/openclaw" target="_blank" class="btn-secondary" style="text-decoration: none;">Open OpenClaw UI</a>
+          <a href="/setup/export" target="_blank" class="btn-secondary" style="text-decoration: none;">Download Backup</a>
         </div>
 
-        <label>Discord bot token (optional)</label>
-        <input id="discordToken" type="password" placeholder="Bot token" />
-        <div class="muted" style="margin-top: 0.25rem">
-          Get it from the Discord Developer Portal: create an application, add a Bot, then copy the Bot Token.<br/>
-          <strong>Important:</strong> Enable <strong>MESSAGE CONTENT INTENT</strong> in Bot → Privileged Gateway Intents.
+        <div class="advanced-card">
+          <h5>Debug Console</h5>
+          <div class="console-row">
+            <select id="consoleCmd" class="setting-input" style="flex: 1;">
+              <option value="gateway.restart">gateway.restart</option>
+              <option value="gateway.stop">gateway.stop</option>
+              <option value="gateway.start">gateway.start</option>
+              <option value="openclaw.status">openclaw status</option>
+              <option value="openclaw.health">openclaw health</option>
+              <option value="openclaw.doctor">openclaw doctor</option>
+              <option value="openclaw.logs.tail">openclaw logs --tail N</option>
+              <option value="openclaw.config.get">openclaw config get</option>
+              <option value="openclaw.version">openclaw --version</option>
+            </select>
+            <input id="consoleArg" class="setting-input" placeholder="Arg" style="width: 100px;" />
+            <button id="consoleRun" class="btn-secondary">Run</button>
+          </div>
+          <pre id="consoleOut" class="console-output" style="display: none;"></pre>
         </div>
 
-        <label>Slack bot token (optional)</label>
-        <input id="slackBotToken" type="password" placeholder="xoxb-..." />
+        <div class="advanced-card">
+          <h5>Config Editor</h5>
+          <p class="muted" style="margin-bottom: 12px;">Path: <code id="configPath"></code></p>
+          <textarea id="configText" class="config-textarea" placeholder="Loading config..."></textarea>
+          <div class="config-actions">
+            <button id="configReload" class="btn-secondary">Reload</button>
+            <button id="configSave" class="btn-secondary">Save</button>
+          </div>
+          <pre id="configOut" class="console-output" style="display: none;"></pre>
+        </div>
 
-        <label>Slack app token (optional)</label>
-        <input id="slackAppToken" type="password" placeholder="xapp-..." />
+        <div class="advanced-card">
+          <h5>Import Backup</h5>
+          <p class="muted" style="margin-bottom: 12px;">Restore from a <code>.tar.gz</code> backup file.</p>
+          <input id="importFile" type="file" accept=".tar.gz,application/gzip" class="setting-input" />
+          <button id="importRun" class="btn-secondary" style="margin-top: 12px;">Import</button>
+          <pre id="importOut" class="console-output" style="display: none;"></pre>
+        </div>
       </div>
     </details>
   </div>
 
+  <script>
+    function copyInvite(el) {
+      var text = el.textContent.trim();
+      navigator.clipboard.writeText(text).then(function() {
+        var original = el.textContent;
+        el.textContent = 'Copied!';
+        el.style.background = '#D4EDDA';
+        el.style.color = '#155724';
+        setTimeout(function() {
+          el.textContent = original;
+          el.style.background = '';
+          el.style.color = '';
+        }, 1500);
+      });
+    }
+  </script>
   <script src="/setup/app.js"></script>
 </body>
 </html>`);
