@@ -988,32 +988,11 @@ app.post("/setup/api/convos/complete-setup", requireSetupAuth, async (req, res) 
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.auth.token", OPENCLAW_GATEWAY_TOKEN]));
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.bind", "loopback"]));
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.port", String(INTERNAL_GATEWAY_PORT)]));
+    // Auto-approve device pairing for the Control UI
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.pairing.autoApprove", "true"]));
 
     // Start gateway
     await restartGateway();
-
-    // Auto-pair the dashboard/Control UI
-    // Generate a pairing code and immediately approve it
-    try {
-      console.log("[complete-setup] Generating dashboard pairing code...");
-      const pairResult = await runCmd(OPENCLAW_NODE, clawArgs(["gateway", "pair"]));
-      console.log("[complete-setup] gateway pair result:", pairResult.output);
-
-      // Parse the pairing code from output (8-char alphanumeric)
-      const codeMatch = pairResult.output.match(/([A-Z0-9]{8})/);
-      if (codeMatch) {
-        const pairingCode = codeMatch[1];
-        console.log("[complete-setup] Auto-approving dashboard pairing code:", pairingCode);
-        const approveResult = await runCmd(OPENCLAW_NODE,
-          clawArgs(["pairing", "approve", "ui", pairingCode]));
-        console.log("[complete-setup] pairing approve result:", approveResult.output);
-      } else {
-        console.log("[complete-setup] No pairing code found in output, skipping auto-approve");
-      }
-    } catch (pairErr) {
-      console.error("[complete-setup] Dashboard pairing failed:", pairErr.message);
-      // Non-fatal - user can pair manually via the UI
-    }
 
     // Send a welcome message to the Convos conversation
     try {
