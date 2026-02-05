@@ -32,11 +32,11 @@
   var importRunEl = document.getElementById('importRun');
   var importOutEl = document.getElementById('importOut');
 
-  // Complete setup button
+  // Buttons
+  var startSetupBtn = document.getElementById('startSetup');
   var completeSetupBtn = document.getElementById('completeSetup');
 
-  // Convos status tracking
-  var convosSetupInProgress = false;
+  // State tracking
   var convosJoined = false;
 
   function setStatus(text, state) {
@@ -275,101 +275,9 @@
     };
   }
 
-  // Convos setup
-  function setupConvosChannel() {
-    convosSetupInProgress = true;
-
-    var loadingEl = document.getElementById('convos-loading');
-    var qrInfoEl = document.getElementById('qr-info');
-    var joinStatusEl = document.getElementById('join-status');
-    var inviteUrlEl = document.getElementById('convos-invite-url');
-    var qrContainer = document.getElementById('convos-qr');
-
-    if (loadingEl) {
-      loadingEl.innerHTML = '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#007AFF" stroke-width="1.5"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/></circle></svg><p>Creating conversation...</p>';
-    }
-
-    httpJson('/setup/api/convos/setup', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({})
-    }).then(function (data) {
-      if (!data.success) {
-        throw new Error(data.error || 'Setup failed');
-      }
-
-      // Hide loading
-      if (loadingEl) loadingEl.style.display = 'none';
-
-      // Show QR code
-      if (qrContainer && typeof QRCode !== 'undefined') {
-        qrContainer.innerHTML = '';
-        try {
-          new QRCode(qrContainer, {
-            text: data.inviteUrl,
-            width: 256,
-            height: 256,
-            colorDark: '#000000',
-            colorLight: '#ffffff',
-            correctLevel: QRCode.CorrectLevel.M
-          });
-        } catch (err) {
-          console.error('QR code generation error:', err);
-          qrContainer.textContent = 'QR code generation failed';
-        }
-      }
-
-      // Show QR info section
-      if (qrInfoEl) qrInfoEl.style.display = 'block';
-
-      // Show invite URL
-      if (inviteUrlEl) {
-        inviteUrlEl.textContent = data.inviteUrl;
-        inviteUrlEl.style.display = 'block';
-      }
-
-      // Poll for join status
-      var pollInterval = setInterval(function() {
-        httpJson('/setup/api/convos/join-status').then(function(state) {
-          if (state.joined && !convosJoined) {
-            convosJoined = true;
-            clearInterval(pollInterval);
-
-            // Update join status badge
-            if (joinStatusEl) {
-              joinStatusEl.textContent = 'Joined';
-              joinStatusEl.className = 'qr-info-value status joined';
-            }
-
-            // Enable the complete setup button
-            if (completeSetupBtn) {
-              completeSetupBtn.disabled = false;
-            }
-          }
-        }).catch(function() {
-          // Ignore polling errors
-        });
-      }, 3000);
-
-      // Stop polling after 5 minutes
-      setTimeout(function() {
-        clearInterval(pollInterval);
-      }, 300000);
-    }).catch(function (err) {
-      if (loadingEl) {
-        loadingEl.innerHTML = '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#FF3B30" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg><p style="color: #FF3B30;">Error: ' + err.message + '</p>';
-      }
-      convosSetupInProgress = false;
-    });
-  }
-
-  // Complete setup button handler
-  function runCompleteSetup() {
-    if (!completeSetupBtn) return;
-    if (!convosJoined) {
-      showError('Please scan the QR code and join the conversation first.');
-      return;
-    }
+  // Start Setup - runs onboarding, starts gateway, calls convos.setup RPC
+  function runStartSetup() {
+    if (!startSetupBtn) return;
 
     hideError();
 
@@ -379,17 +287,106 @@
       authSecret: document.getElementById('authSecret') ? document.getElementById('authSecret').value : ''
     };
 
+    startSetupBtn.disabled = true;
+    startSetupBtn.textContent = 'Running onboarding...';
+    showLog('Starting onboarding...\n');
+
+    var loadingEl = document.getElementById('convos-loading');
+    if (loadingEl) {
+      loadingEl.innerHTML = '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#007AFF" stroke-width="1.5"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/></circle></svg><p>Running onboarding and starting gateway...</p>';
+    }
+
+    httpJson('/setup/api/convos/setup', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (data) {
+      if (!data.success) {
+        throw new Error(data.error || 'Setup failed');
+      }
+
+      appendLog('Onboarding complete. Convos invite created.\n');
+
+      // Hide loading, show QR image
+      if (loadingEl) loadingEl.style.display = 'none';
+
+      var qrImg = document.getElementById('convos-qr');
+      if (qrImg && data.qrDataUrl) {
+        qrImg.src = data.qrDataUrl;
+        qrImg.style.display = 'block';
+      }
+
+      // Show QR info section
+      var qrInfoEl = document.getElementById('qr-info');
+      if (qrInfoEl) qrInfoEl.style.display = 'block';
+
+      // Show invite URL
+      var inviteUrlEl = document.getElementById('convos-invite-url');
+      if (inviteUrlEl) {
+        inviteUrlEl.textContent = data.inviteUrl;
+        inviteUrlEl.style.display = 'block';
+      }
+
+      // Hide start button, update status
+      startSetupBtn.style.display = 'none';
+      setStatus('Waiting for join...', 'pending');
+
+      // Poll for join status
+      var pollInterval = setInterval(function () {
+        httpJson('/setup/api/convos/join-status').then(function (state) {
+          if (state.joined && !convosJoined) {
+            convosJoined = true;
+            clearInterval(pollInterval);
+
+            // Update join status badge
+            var joinStatusEl = document.getElementById('join-status');
+            if (joinStatusEl) {
+              joinStatusEl.textContent = 'Joined';
+              joinStatusEl.className = 'qr-info-value status joined';
+            }
+
+            // Show the Finish Setup button
+            if (completeSetupBtn) {
+              completeSetupBtn.style.display = 'block';
+            }
+
+            setStatus('User joined - ready to finish', 'success');
+          }
+        }).catch(function () {
+          // Ignore polling errors
+        });
+      }, 3000);
+
+      // Stop polling after 5 minutes
+      setTimeout(function () {
+        clearInterval(pollInterval);
+      }, 300000);
+    }).catch(function (err) {
+      if (loadingEl) {
+        loadingEl.innerHTML = '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#FF3B30" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg><p style="color: #FF3B30;">Error: ' + err.message + '</p>';
+      }
+      showError(err.message);
+      startSetupBtn.disabled = false;
+      startSetupBtn.textContent = 'Start Setup';
+    });
+  }
+
+  // Finish Setup - calls convos.setup.complete RPC
+  function runCompleteSetup() {
+    if (!completeSetupBtn) return;
+
+    hideError();
     completeSetupBtn.disabled = true;
-    completeSetupBtn.textContent = 'Running onboarding...';
-    showLog('Starting setup...\n');
+    completeSetupBtn.textContent = 'Completing setup...';
+    showLog('Finalizing Convos configuration...\n');
 
     httpJson('/setup/api/convos/complete-setup', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload)
-    }).then(function(data) {
-      appendLog(data.output || JSON.stringify(data, null, 2));
+      body: JSON.stringify({})
+    }).then(function (data) {
       if (data.ok) {
+        appendLog('Setup complete!\n');
         completeSetupBtn.textContent = 'Setup Complete!';
         completeSetupBtn.classList.add('success');
         setStatus('Ready', 'success');
@@ -399,7 +396,7 @@
         completeSetupBtn.textContent = 'Finish Setup';
       }
       return refreshStatus();
-    }).catch(function(err) {
+    }).catch(function (err) {
       appendLog('\nError: ' + String(err) + '\n');
       showError(String(err));
       completeSetupBtn.disabled = false;
@@ -407,25 +404,23 @@
     });
   }
 
+  if (startSetupBtn) startSetupBtn.onclick = runStartSetup;
   if (completeSetupBtn) completeSetupBtn.onclick = runCompleteSetup;
 
   // Initial load
   refreshStatus();
 
-  // Auto-generate Convos invite on page load
-  httpJson('/setup/api/convos/status').then(function(data) {
-    if (!data.configured) {
-      setupConvosChannel();
-    } else {
-      // Already configured - show regenerate option
+  // Check if already configured
+  httpJson('/setup/api/status').then(function (data) {
+    if (data.configured) {
       var loadingEl = document.getElementById('convos-loading');
       if (loadingEl) {
-        loadingEl.innerHTML = '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#34C759" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg><p style="color: #34C759;">Already configured</p><button onclick="location.reload()" style="margin-top: 12px; padding: 8px 16px; background: #F5F5F5; border: none; border-radius: 8px; cursor: pointer;">Regenerate Invite</button>';
+        loadingEl.innerHTML = '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#34C759" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg><p style="color: #34C759;">Already configured</p>';
       }
+      if (startSetupBtn) startSetupBtn.style.display = 'none';
       setStatus('Ready', 'success');
     }
-  }).catch(function() {
-    // On error, try to generate invite anyway
-    setupConvosChannel();
+  }).catch(function () {
+    // Ignore - status will be loaded by refreshStatus
   });
 })();

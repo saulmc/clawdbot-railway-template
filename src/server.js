@@ -1,4 +1,4 @@
-import childProcess, { spawnSync } from "node:child_process";
+import childProcess from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -7,8 +7,6 @@ import path from "node:path";
 import express from "express";
 import httpProxy from "http-proxy";
 import * as tar from "tar";
-
-import { setupConvos, getJoinState, stopConvosAgent, sendMessage } from "./convos-setup.js";
 
 // Railway deployments sometimes inject PORT=3000 by default. We want the wrapper to
 // reliably listen on 8080 unless explicitly overridden.
@@ -71,6 +69,32 @@ const GATEWAY_TARGET = `http://${INTERNAL_GATEWAY_HOST}:${INTERNAL_GATEWAY_PORT}
 
 // XMTP environment (production or dev) - controlled via Railway env var
 const XMTP_ENV = process.env.XMTP_ENV || "production";
+
+// JSON-RPC helper for calling gateway RPCs (Convos setup, etc.)
+async function gatewayRpc(method, params = {}) {
+  const url = `${GATEWAY_TARGET}/rpc`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${OPENCLAW_GATEWAY_TOKEN}`,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: crypto.randomUUID(),
+      method,
+      params,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`RPC HTTP ${res.status}: ${await res.text()}`);
+  }
+  const json = await res.json();
+  if (json.error) {
+    throw new Error(json.error.message || JSON.stringify(json.error));
+  }
+  return json.result;
+}
 
 // Always run the built-from-source CLI entry directly to avoid PATH/global-install mismatches.
 const OPENCLAW_ENTRY = process.env.OPENCLAW_ENTRY?.trim() || "/openclaw/dist/entry.js";
@@ -253,7 +277,6 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -390,11 +413,6 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
     }
 
     #convos-qr {
-      border-radius: 16px;
-      overflow: hidden;
-    }
-
-    #convos-qr canvas, #convos-qr img {
       border-radius: 16px;
     }
 
@@ -700,7 +718,7 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
       <div class="card">
         <h3>Connect via Convos</h3>
         <div class="qr-container">
-          <div id="convos-qr"></div>
+          <img id="convos-qr" style="display: none; border-radius: 16px; width: 256px; height: 256px;" alt="Scan to connect" />
           <div id="convos-loading" class="qr-placeholder">
             <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5">
               <rect x="3" y="3" width="7" height="7" rx="1" />
@@ -711,7 +729,7 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
               <rect x="14" y="18" width="3" height="3" />
               <rect x="18" y="18" width="3" height="3" />
             </svg>
-            <p>Generating invite...</p>
+            <p>Click "Start Setup" to begin</p>
           </div>
           <div class="qr-info" id="qr-info" style="display: none;">
             <div class="qr-info-row">
@@ -752,7 +770,10 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
       </div>
     </div>
 
-    <button id="completeSetup" class="btn-primary" disabled>
+    <button id="startSetup" class="btn-primary">
+      Start Setup
+    </button>
+    <button id="completeSetup" class="btn-primary" style="display: none;">
       Finish Setup
     </button>
 
@@ -895,19 +916,59 @@ app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
   });
 });
 
-// Convos setup endpoint - creates conversation and returns invite URL
+// Convos setup endpoint - runs onboarding, starts gateway, then calls convos.setup RPC
 app.post("/setup/api/convos/setup", requireSetupAuth, async (req, res) => {
   try {
-    const { env = "production", name = "OpenClaw" } = req.body || {};
+    const payload = req.body || {};
 
-    console.log(`[convos] Setting up Convos (env: ${env}, name: ${name})...`);
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 
-    const result = await setupConvos({ env, name });
+    // Run onboarding first (creates config file with model/auth settings)
+    console.log("[convos] Running onboarding...");
+    const onboardArgs = buildOnboardArgs(payload);
+    const onboard = await runCmd(OPENCLAW_NODE, clawArgs(onboardArgs));
+
+    if (onboard.code !== 0 || !isConfigured()) {
+      return res.status(500).json({
+        success: false,
+        error: "Onboarding failed",
+        output: onboard.output,
+      });
+    }
+
+    // Set gateway config
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.mode", "local"]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.auth.mode", "token"]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.auth.token", OPENCLAW_GATEWAY_TOKEN]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.bind", "loopback"]));
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.port", String(INTERNAL_GATEWAY_PORT)]));
+    // Disable device pairing for Control UI - Railway proxy makes all connections appear non-local
+    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]));
+
+    // Start gateway
+    console.log("[convos] Starting gateway...");
+    await restartGateway();
+
+    // Call convos.setup RPC via the running gateway
+    console.log("[convos] Calling convos.setup RPC...");
+    let result;
+    // Retry a few times in case the gateway needs a moment to fully initialize
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        result = await gatewayRpc("convos.setup", { env: XMTP_ENV, name: "OpenClaw" });
+        break;
+      } catch (rpcErr) {
+        if (attempt === 3) throw rpcErr;
+        console.log(`[convos] RPC attempt ${attempt} failed, retrying...`);
+        await sleep(1500);
+      }
+    }
 
     res.json({
       success: true,
+      qrDataUrl: result.qrDataUrl,
       inviteUrl: result.inviteUrl,
-      inviteSlug: result.inviteSlug,
       conversationId: result.conversationId,
     });
   } catch (err) {
@@ -919,99 +980,31 @@ app.post("/setup/api/convos/setup", requireSetupAuth, async (req, res) => {
   }
 });
 
-// Convos status endpoint - check if already configured
-app.get("/setup/api/convos/status", requireSetupAuth, async (req, res) => {
+// Convos join status endpoint - passthrough to convos.setup.status RPC
+app.get("/setup/api/convos/join-status", requireSetupAuth, async (req, res) => {
   try {
-    const result = spawnSync("openclaw", ["config", "get", "channels.convos"], {
-      encoding: "utf8",
-      timeout: 10000,
-    });
-
-    if (result.status !== 0) {
-      return res.json({ configured: false });
-    }
-
-    const config = JSON.parse(result.stdout.trim() || "{}");
+    const result = await gatewayRpc("convos.setup.status");
     res.json({
-      configured: Boolean(config.privateKey && config.ownerConversationId),
-      ownerConversationId: config.ownerConversationId,
-      env: config.env || "production",
+      joined: result.joined,
+      joinerInboxId: result.joinerInboxId || null,
+      active: result.active,
     });
   } catch (err) {
-    res.json({ configured: false, error: err.message });
+    // If gateway is not running or RPC fails, return not-joined state
+    res.json({ joined: false, joinerInboxId: null, error: err.message });
   }
 });
 
-// Convos join status endpoint - check if user has joined via invite
-app.get("/setup/api/convos/join-status", requireSetupAuth, async (req, res) => {
-  const state = getJoinState();
-
-  // Don't stop the agent yet - we need it to send the pairing code
-  res.json(state);
-});
-
-// Convos complete-setup endpoint - runs onboarding and sends pairing code
+// Convos complete-setup endpoint - calls convos.setup.complete RPC
 app.post("/setup/api/convos/complete-setup", requireSetupAuth, async (req, res) => {
   try {
-    const payload = req.body || {};
-
-    // Check if user has joined
-    const joinState = getJoinState();
-    if (!joinState.joined) {
-      return res.status(400).json({
-        ok: false,
-        error: "User has not joined the conversation yet. Scan the QR code first."
-      });
-    }
-
-    // Note: We don't check isConfigured() here because the Convos QR generation
-    // step already creates a partial config. This endpoint completes that setup.
-
-    fs.mkdirSync(STATE_DIR, { recursive: true });
-    fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
-
-    // Run onboarding
-    const onboardArgs = buildOnboardArgs(payload);
-    const onboard = await runCmd(OPENCLAW_NODE, clawArgs(onboardArgs));
-
-    if (onboard.code !== 0 || !isConfigured()) {
-      return res.status(500).json({
-        ok: false,
-        output: onboard.output,
-        error: "Onboarding failed"
-      });
-    }
-
-    // Set gateway config
-    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.mode", "local"]));
-    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.auth.mode", "token"]));
-    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.auth.token", OPENCLAW_GATEWAY_TOKEN]));
-    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.bind", "loopback"]));
-    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.port", String(INTERNAL_GATEWAY_PORT)]));
-    // Disable device pairing for Control UI - Railway proxy makes all connections appear non-local
-    // This is safe because access is already protected by HTTPS + SETUP_PASSWORD
-    await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.controlUi.allowInsecureAuth", "true"]));
-
-    // Start gateway
-    await restartGateway();
-
-    // Send a welcome message to the Convos conversation
-    try {
-      await sendMessage("Setup complete! OpenClaw is now ready to use.");
-      console.log("[complete-setup] Sent welcome message to Convos");
-    } catch (msgErr) {
-      console.error("[complete-setup] Failed to send welcome message:", msgErr.message);
-      // Non-fatal - setup is still complete
-    }
-
-    // Stop the setup agent - we're done with the invite flow
-    await stopConvosAgent();
+    const result = await gatewayRpc("convos.setup.complete");
+    console.log("[convos] Setup complete:", result);
 
     res.json({
       ok: true,
-      output: onboard.output
+      conversationId: result.conversationId,
     });
-
   } catch (err) {
     console.error("[/setup/api/convos/complete-setup] error:", err);
     return res.status(500).json({ ok: false, error: String(err) });
