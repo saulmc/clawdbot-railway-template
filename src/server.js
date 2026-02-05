@@ -965,7 +965,7 @@ app.post("/setup/api/convos/setup", requireSetupAuth, async (req, res) => {
         controlUi: { allowInsecureAuth: true },
       },
       plugins: {
-        load: { paths: ["/openclaw/extensions"] },
+        entries: { convos: { enabled: true } },
       },
     };
     fs.writeFileSync(configPath(), JSON.stringify(config, null, 2));
