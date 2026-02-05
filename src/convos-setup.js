@@ -92,8 +92,8 @@ export async function setupConvos(options = {}) {
   // Create XMTP agent
   const agent = await Agent.create(signer, { env });
 
-  // Create Convos middleware
-  const convos = ConvosMiddleware.create(agent, { privateKey: user.key });
+  // Create Convos middleware (pass env so it generates correct invite URL)
+  const convos = ConvosMiddleware.create(agent, { privateKey: user.key, env });
   agent.use(convos.middleware());
 
   // Set up invite handler to auto-accept join requests
