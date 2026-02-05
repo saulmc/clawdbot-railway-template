@@ -112,6 +112,18 @@ function isConfigured() {
   }
 }
 
+// Check if Convos channel is actually configured (not just that a config file exists).
+// A config file can exist from onboarding without Convos being set up.
+function isConvosConfigured() {
+  try {
+    const raw = fs.readFileSync(configPath(), "utf8");
+    const cfg = JSON.parse(raw);
+    return !!(cfg?.channels?.convos);
+  } catch {
+    return false;
+  }
+}
+
 let gatewayProc = null;
 let gatewayStarting = null;
 
@@ -901,6 +913,7 @@ app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
 
   res.json({
     configured: isConfigured(),
+    convosConfigured: isConvosConfigured(),
     gatewayTarget: GATEWAY_TARGET,
     openclawVersion: version.output.trim(),
     channelsAddHelp: channelsHelp.output,
@@ -916,7 +929,7 @@ app.post("/setup/api/convos/setup", requireSetupAuth, async (req, res) => {
     fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 
-    // Stop existing gateway before config writes to avoid cascading SIGUSR1 restarts.
+    // Stop any gateway we manage before config writes to avoid cascading SIGUSR1 restarts.
     if (gatewayProc) {
       console.log("[convos] Stopping existing gateway before setup...");
       try { gatewayProc.kill("SIGTERM"); } catch {}
@@ -936,6 +949,12 @@ app.post("/setup/api/convos/setup", requireSetupAuth, async (req, res) => {
         output: onboard.output,
       });
     }
+
+    // Onboarding may start a gateway as a side-effect. Kill any process on the
+    // gateway port so our config sets don't trigger cascading SIGUSR1 restarts
+    // and so we can start a clean gateway afterwards.
+    await runCmd("sh", ["-c", `fuser -k ${INTERNAL_GATEWAY_PORT}/tcp 2>/dev/null || true`]);
+    await sleep(500);
 
     // Batch all gateway config before starting the gateway (avoids restart cascade).
     await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "gateway.mode", "local"]));

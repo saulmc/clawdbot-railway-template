@@ -430,9 +430,10 @@
   // Initial load
   refreshStatus();
 
-  // Check if already configured
+  // Only show "Already configured" when Convos channel is actually set up,
+  // not just because a config file exists from onboarding.
   httpJson('/setup/api/status').then(function (data) {
-    if (data.configured) {
+    if (data.convosConfigured) {
       var loadingEl = document.getElementById('convos-loading');
       if (loadingEl) {
         loadingEl.innerHTML = '<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#34C759" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg><p style="color: #34C759;">Already configured</p>';
