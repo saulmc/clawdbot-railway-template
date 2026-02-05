@@ -921,21 +921,65 @@ app.get("/setup/api/status", requireSetupAuth, async (_req, res) => {
   });
 });
 
-// Map auth choice values to environment variable names.
-// The gateway reads provider API keys from env vars at startup.
-const AUTH_ENV_MAP = {
-  "apiKey": "ANTHROPIC_API_KEY",
-  "openai-api-key": "OPENAI_API_KEY",
-  "openrouter-api-key": "OPENROUTER_API_KEY",
-  "gemini-api-key": "GOOGLE_API_KEY",
-  "ai-gateway-api-key": "AI_GATEWAY_API_KEY",
-  "moonshot-api-key": "MOONSHOT_API_KEY",
-  "kimi-code-api-key": "KIMI_CODE_API_KEY",
-  "zai-api-key": "ZAI_API_KEY",
-  "minimax-api": "MINIMAX_API_KEY",
-  "minimax-api-lightning": "MINIMAX_API_KEY",
-  "synthetic-api-key": "SYNTHETIC_API_KEY",
-  "opencode-zen": "OPENCODE_ZEN_API_KEY",
+// Per-auth-choice configuration: model name, env var, and optional custom provider config.
+// Model names and env vars sourced from OpenClaw docs/concepts/model-providers.md.
+// Config path: agents.defaults.model = "provider/model-id"
+const AUTH_PROVIDER_CONFIG = {
+  // Anthropic
+  "apiKey":       { model: "anthropic/claude-opus-4-5", envVar: "ANTHROPIC_API_KEY" },
+  "token":        { model: "anthropic/claude-opus-4-5" }, // setup-token, pasted via auth flow
+  "claude-cli":   { model: "anthropic/claude-opus-4-5" }, // OAuth
+  // OpenAI
+  "openai-api-key": { model: "openai/gpt-5.2", envVar: "OPENAI_API_KEY" },
+  "codex-cli":      { model: "openai-codex/gpt-5.2" },   // OAuth (Codex CLI)
+  "openai-codex":   { model: "openai-codex/gpt-5.2" },   // OAuth (ChatGPT)
+  // Google
+  "gemini-api-key":    { model: "google/gemini-3-pro-preview", envVar: "GEMINI_API_KEY" },
+  "google-antigravity": { model: "google-antigravity/gemini-3-pro-preview" }, // OAuth + plugin
+  "google-gemini-cli":  { model: "google-gemini-cli/gemini-3-pro-preview" },  // OAuth + plugin
+  // OpenRouter
+  "openrouter-api-key": { model: "openrouter/anthropic/claude-sonnet-4-5", envVar: "OPENROUTER_API_KEY" },
+  // Vercel AI Gateway
+  "ai-gateway-api-key": { model: "vercel-ai-gateway/anthropic/claude-opus-4.5", envVar: "AI_GATEWAY_API_KEY" },
+  // Moonshot
+  "moonshot-api-key": {
+    model: "moonshot/kimi-k2.5",
+    envVar: "MOONSHOT_API_KEY",
+    customProvider: {
+      moonshot: {
+        baseUrl: "https://api.moonshot.ai/v1",
+        apiKey: "${MOONSHOT_API_KEY}",
+        api: "openai-completions",
+        models: [{ id: "kimi-k2.5", name: "Kimi K2.5" }],
+      },
+    },
+  },
+  // Kimi Coding
+  "kimi-code-api-key": { model: "kimi-coding/k2p5", envVar: "KIMI_API_KEY" },
+  // Z.AI
+  "zai-api-key": { model: "zai/glm-4.7", envVar: "ZAI_API_KEY" },
+  // MiniMax
+  "minimax-api":           { model: "minimax/MiniMax-M2.1", envVar: "MINIMAX_API_KEY" },
+  "minimax-api-lightning":  { model: "minimax/MiniMax-M2.1", envVar: "MINIMAX_API_KEY" },
+  // Qwen
+  "qwen-portal": { model: "qwen-portal/coder-model" }, // OAuth + plugin
+  // Copilot
+  "github-copilot": { model: "github-copilot/gpt-4o" }, // device login
+  "copilot-proxy":  { model: "github-copilot/gpt-4o" }, // local proxy
+  // Multi-model proxies
+  "synthetic-api-key": {
+    model: "synthetic/hf:MiniMaxAI/MiniMax-M2.1",
+    envVar: "SYNTHETIC_API_KEY",
+    customProvider: {
+      synthetic: {
+        baseUrl: "https://api.synthetic.new/anthropic",
+        apiKey: "${SYNTHETIC_API_KEY}",
+        api: "anthropic-messages",
+        models: [{ id: "hf:MiniMaxAI/MiniMax-M2.1", name: "MiniMax M2.1" }],
+      },
+    },
+  },
+  "opencode-zen": { model: "opencode/claude-opus-4-5", envVar: "OPENCODE_ZEN_API_KEY" },
 };
 
 // Convos setup endpoint — writes config directly, starts gateway, calls POST /convos/setup
@@ -956,6 +1000,10 @@ app.post("/setup/api/convos/setup", requireSetupAuth, async (req, res) => {
 
     // Write config JSON directly — no onboarding, no config set calls, no restart cascade.
     console.log("[convos] Writing gateway config...");
+    const authChoice = payload.authChoice || "";
+    const providerCfg = AUTH_PROVIDER_CONFIG[authChoice];
+    const secret = (payload.authSecret || "").trim();
+
     const config = {
       gateway: {
         mode: "local",
@@ -968,18 +1016,29 @@ app.post("/setup/api/convos/setup", requireSetupAuth, async (req, res) => {
         load: { paths: ["/openclaw/extensions"] },
       },
     };
-    fs.writeFileSync(configPath(), JSON.stringify(config, null, 2));
 
-    // Set the AI provider API key as an env var — the gateway reads it at startup.
-    // If the key is already set via Railway env var, this is a no-op.
-    const secret = (payload.authSecret || "").trim();
-    if (secret && payload.authChoice) {
-      const envVar = AUTH_ENV_MAP[payload.authChoice];
-      if (envVar) {
-        process.env[envVar] = secret;
-        console.log(`[convos] Set ${envVar} from setup form`);
-      }
+    // Set the agent model (agents.defaults.model = "provider/model-id").
+    if (providerCfg?.model) {
+      config.agents = { defaults: { model: providerCfg.model } };
+      console.log(`[convos] Setting agent model: ${providerCfg.model}`);
+    } else if (authChoice) {
+      console.warn(`[convos] No default model mapped for authChoice="${authChoice}"`);
     }
+
+    // Set the API key as an env var — the gateway reads provider keys from env vars
+    // at startup (e.g., OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY).
+    if (secret && providerCfg?.envVar) {
+      process.env[providerCfg.envVar] = secret;
+      console.log(`[convos] Set ${providerCfg.envVar} from setup form`);
+    }
+
+    // Some providers need custom models.providers config (e.g., Moonshot, Synthetic).
+    if (providerCfg?.customProvider) {
+      config.models = { mode: "merge", providers: providerCfg.customProvider };
+      console.log(`[convos] Added custom provider config for ${authChoice}`);
+    }
+
+    fs.writeFileSync(configPath(), JSON.stringify(config, null, 2));
 
     // Start gateway (config is already written — single clean start)
     console.log("[convos] Starting gateway...");
