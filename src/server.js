@@ -360,18 +360,31 @@ app.post("/pool/provision", requirePoolAuth, async (req, res) => {
     console.log("[pool] Wrote instructions to INSTRUCTIONS.md");
 
     // Create XMTP conversation via the Convos plugin.
+    // Fast path: use the running channel client (pre-warmed) to create a conversation.
+    // Fallback: use the setup flow (creates a temporary client, slower).
     let result;
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      try {
-        result = await convosHttp("/convos/setup", {
-          method: "POST",
-          body: { env: XMTP_ENV, name: agentName, force: true },
-        });
-        break;
-      } catch (err) {
-        if (attempt === 5) throw err;
-        console.log(`[pool] Setup attempt ${attempt} failed, retrying in 2s...`);
-        await sleep(2000);
+    let usedFastPath = false;
+    try {
+      result = await convosHttp("/convos/conversation", {
+        method: "POST",
+        body: { name: agentName },
+      });
+      usedFastPath = true;
+      console.log("[pool] Fast path: conversation created via running client");
+    } catch (fastErr) {
+      console.log(`[pool] Fast path unavailable (${fastErr.message}), falling back to setup...`);
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+          result = await convosHttp("/convos/setup", {
+            method: "POST",
+            body: { env: XMTP_ENV, name: agentName, force: true },
+          });
+          break;
+        } catch (err) {
+          if (attempt === 5) throw err;
+          console.log(`[pool] Setup attempt ${attempt} failed, retrying in 2s...`);
+          await sleep(2000);
+        }
       }
     }
 
@@ -383,8 +396,12 @@ app.post("/pool/provision", requirePoolAuth, async (req, res) => {
     console.log(`[pool] Provisioned. conversationId=${result.conversationId}`);
     console.log(`[pool] Invite URL: ${result.inviteUrl}`);
 
-    // Start background polling to auto-complete setup when someone joins.
-    pollForJoinAndComplete();
+    // Only need join polling for the slow (setup) path — the setup agent
+    // must be cleaned up after the user joins.  With the fast path, the
+    // runtime client is already running and auto-accepts invites.
+    if (!usedFastPath) {
+      pollForJoinAndComplete();
+    }
 
     res.json({
       inviteUrl: result.inviteUrl,
