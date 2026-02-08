@@ -420,11 +420,7 @@ function pollForJoinAndComplete() {
         // Complete the setup to persist config and start the channel.
         try {
           await convosHttp("/convos/setup/complete", { method: "POST" });
-          console.log("[pool] Setup completed — restarting gateway for immediate activation");
-          // Force gateway restart so the convos channel reloads immediately
-          // instead of waiting for the file-watcher config-reload delay.
-          await restartGateway();
-          console.log("[pool] Gateway restarted — agent is live");
+          console.log("[pool] Setup completed — agent is live");
         } catch (err) {
           console.error("[pool] Failed to complete setup:", err);
         }
@@ -1951,10 +1947,11 @@ if (POOL_MODE) {
         await convosHttp("/convos/setup/complete", { method: "POST" });
         console.log("[pool] Pre-warm: setup completed, config persisted");
 
-        // 3. Restart gateway so it picks up the convos channel config and
-        //    starts the runtime ConvosSDKClient with persistent DB.
-        await restartGateway();
-        console.log("[pool] Pre-warm: gateway restarted with XMTP runtime client");
+        // 3. Gateway file-watcher detects convos channel config change and
+        //    hot-reloads → starts the runtime ConvosSDKClient with persistent DB.
+        //    No explicit restart needed — hot-reload is less disruptive and
+        //    keeps the XMTP connection alive for faster message delivery.
+        console.log("[pool] Pre-warm: config persisted, gateway will hot-reload");
       } catch (err) {
         // Pre-warm is best-effort — instance is still usable without it,
         // provision will just take longer (cold XMTP identity creation).
