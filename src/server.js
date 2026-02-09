@@ -386,6 +386,19 @@ app.post("/pool/provision", requirePoolAuth, async (req, res) => {
       });
       console.log(`[pool] Joined conversation: ${joinResult.conversationId} (status: ${joinResult.status})`);
 
+      // Set the agent's display name in the conversation so it doesn't show "Somebody".
+      if (joinResult.conversationId) {
+        try {
+          await convosHttp("/convos/rename", {
+            method: "POST",
+            body: { conversationId: joinResult.conversationId, name: agentName },
+          });
+          console.log(`[pool] Set agent profile name to "${agentName}"`);
+        } catch (renameErr) {
+          console.warn("[pool] Failed to set agent profile name:", renameErr.message);
+        }
+      }
+
       if (!joinResult.conversationId) {
         return res.status(202).json({
           status: "waiting_for_acceptance",
