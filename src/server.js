@@ -358,7 +358,7 @@ app.post("/pool/provision", requirePoolAuth, async (req, res) => {
     });
   }
 
-  const { instructions, name } = req.body || {};
+  const { instructions, name, joinUrl } = req.body || {};
   if (!instructions || typeof instructions !== "string") {
     return res.status(400).json({ error: "instructions (string) is required" });
   }
@@ -372,54 +372,96 @@ app.post("/pool/provision", requirePoolAuth, async (req, res) => {
     fs.writeFileSync(path.join(WORKSPACE_DIR, "INSTRUCTIONS.md"), instructions);
     console.log("[pool] Wrote instructions to INSTRUCTIONS.md");
 
-    // Create XMTP conversation via the Convos plugin.
-    // Fast path: use the running channel client (pre-warmed) to create a conversation.
-    // Fallback: use the setup flow (creates a temporary client, slower).
     let result;
     let usedFastPath = false;
-    try {
-      result = await convosHttp("/convos/conversation", {
+
+    if (joinUrl && typeof joinUrl === "string") {
+      // --- Join existing conversation flow ---
+      console.log(`[pool] Join mode: joining conversation via ${joinUrl.slice(0, 40)}...`);
+
+      // Join the conversation via the Convos plugin's HTTP route.
+      const joinResult = await convosHttp("/convos/join", {
         method: "POST",
-        body: { name: agentName },
+        body: { inviteUrl: joinUrl },
       });
-      usedFastPath = true;
-      console.log("[pool] Fast path: conversation created via running client");
-    } catch (fastErr) {
-      console.log(`[pool] Fast path unavailable (${fastErr.message}), falling back to setup...`);
-      for (let attempt = 1; attempt <= 5; attempt++) {
-        try {
-          result = await convosHttp("/convos/setup", {
-            method: "POST",
-            body: { env: XMTP_ENV, name: agentName, force: true },
-          });
-          break;
-        } catch (err) {
-          if (attempt === 5) throw err;
-          console.log(`[pool] Setup attempt ${attempt} failed, retrying in 2s...`);
-          await sleep(2000);
+      console.log(`[pool] Joined conversation: ${joinResult.conversationId} (status: ${joinResult.status})`);
+
+      if (!joinResult.conversationId) {
+        return res.status(202).json({
+          status: "waiting_for_acceptance",
+          message: "Join request sent but not yet accepted by group admin.",
+        });
+      }
+
+      // Send an introduction message.
+      const introMessage = `Hi! I'm ${agentName}. I've joined this conversation and I'm ready to help. Let me know what you need!`;
+      try {
+        await convosHttp("/convos/conversation/send", {
+          method: "POST",
+          body: { conversationId: joinResult.conversationId, message: introMessage },
+        });
+        console.log("[pool] Sent intro message");
+      } catch (introErr) {
+        console.warn("[pool] Failed to send intro message:", introErr.message);
+      }
+
+      poolProvisioned = true;
+      poolConversationId = joinResult.conversationId;
+      // No invite URL or QR for join mode — conversation already exists.
+      poolInviteUrl = joinUrl;
+      poolQrDataUrl = null;
+
+      result = {
+        conversationId: joinResult.conversationId,
+        inviteUrl: joinUrl,
+        qrDataUrl: null,
+        joined: true,
+      };
+    } else {
+      // --- Create new conversation flow (existing behavior) ---
+      try {
+        result = await convosHttp("/convos/conversation", {
+          method: "POST",
+          body: { name: agentName },
+        });
+        usedFastPath = true;
+        console.log("[pool] Fast path: conversation created via running client");
+      } catch (fastErr) {
+        console.log(`[pool] Fast path unavailable (${fastErr.message}), falling back to setup...`);
+        for (let attempt = 1; attempt <= 5; attempt++) {
+          try {
+            result = await convosHttp("/convos/setup", {
+              method: "POST",
+              body: { env: XMTP_ENV, name: agentName, force: true },
+            });
+            break;
+          } catch (err) {
+            if (attempt === 5) throw err;
+            console.log(`[pool] Setup attempt ${attempt} failed, retrying in 2s...`);
+            await sleep(2000);
+          }
         }
+      }
+
+      poolProvisioned = true;
+      poolConversationId = result.conversationId;
+      poolInviteUrl = result.inviteUrl;
+      poolQrDataUrl = result.qrDataUrl;
+
+      // Only need join polling for the slow (setup) path.
+      if (!usedFastPath) {
+        pollForJoinAndComplete();
       }
     }
 
-    poolProvisioned = true;
-    poolConversationId = result.conversationId;
-    poolInviteUrl = result.inviteUrl;
-    poolQrDataUrl = result.qrDataUrl;
-
-    console.log(`[pool] Provisioned. conversationId=${result.conversationId}`);
-    console.log(`[pool] Invite URL: ${result.inviteUrl}`);
-
-    // Only need join polling for the slow (setup) path — the setup agent
-    // must be cleaned up after the user joins.  With the fast path, the
-    // runtime client is already running and auto-accepts invites.
-    if (!usedFastPath) {
-      pollForJoinAndComplete();
-    }
+    console.log(`[pool] Provisioned. conversationId=${poolConversationId}`);
+    if (poolInviteUrl) console.log(`[pool] Invite URL: ${poolInviteUrl}`);
 
     res.json({
-      inviteUrl: result.inviteUrl,
-      qrDataUrl: result.qrDataUrl,
+      inviteUrl: result.inviteUrl || null,
+      qrDataUrl: result.qrDataUrl || null,
       conversationId: result.conversationId,
+      joined: !!result.joined,
     });
   } catch (err) {
     console.error("[pool] Provision failed:", err);
